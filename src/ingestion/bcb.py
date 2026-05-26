@@ -125,3 +125,21 @@ def validate(df: pd.DataFrame) -> pd.DataFrame:
         logger.warning(df[~df["is_valid"]])
 
     return df
+
+# Batch fetch
+def fetch_all(
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> dict[str, pd.DataFrame]:
+    """
+    Fetch and validate all project series.
+
+    """
+    results = {}
+    for name, sid in SERIES.items():
+        df = fetch_series(sid, start_date=start_date, end_date=end_date)
+        df = validate(df)
+        results[name] = df
+    return results
+
+# PPP S3 Storage
