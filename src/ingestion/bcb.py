@@ -3,11 +3,13 @@ Pulls time series from Banco Central SGS API
 Docs:https://www.bcb.gov.br/estatisticas/sgspub
 
 Series used in this project: # PPP Confirm after over
-    12   — CDI diário (% a.d.)
-    433  — IPCA mensal (% a.m.)
-    226  — TR diária (% a.d.)
-    432  — SELIC meta (% a.a.)
-    11   — SELIC diária efetiva (% a.d.) 
+    12   - CDI daily (% a.d.)
+    433  - IPCA monthly (% a.m.)
+    226  - TR daily (% a.d.)
+    432  - SELIC  (% a.a.)
+    11   - SELIC efective daily (% a.d.)
+    12466 - VNA NTN-B 
+    4390 - VNA NTN-C
 """
 
 import logging
@@ -33,6 +35,8 @@ SERIES = {
     "tr_daily": 226,
     "selic_target": 432,
     "selic_daily": 11,
+    "vna_ntn_b": 12466,
+    "vna_ntn_c": 4390
 }
 
 DATE_FORMAT = "%d/%m/%Y"
@@ -104,6 +108,9 @@ BOUNDS: dict[int, tuple[float,float]] = {
     226: (0.0, 5.0),     # TR daily
     432: (0.0, 100.0),   # SELIC target annual %
     11:  (0.0, 5.0),     # SELIC daily
+    12466: (1000.0, 20000.0), # VNA NTN-B (IPCA related)
+    4390: (1000.0, 50000.0)    # VNA NTN-C (IGP-M related)
+
 }
     
 def validate(df: pd.DataFrame) -> pd.DataFrame:
