@@ -1,65 +1,75 @@
 """
 src/ingestion/tesouro.py
-
-Pulls historical bond prices from the Tesouro Direto public API.
-
-Docs: https://www.tesourodireto.com.br/dados-abertos.htm
-
-Bonds:
-    NTN-B  — IPCA-linked, pays real coupon. Input for real yield curve.
-    NTN-F  — Prefixed, pays nominal coupon. Input for long nominal curve.
-    LTN    — Prefixed zero-coupon. Input for short nominal curve.
-
-Returns per bond per day:
-    - maturity date
-    - buy price (PU compra)
-    - sell price (PU venda)
-    - theoretical price (PU base — mid, used for curve fitting)
-    - annual yield (taxa)
+ 
+Pulls historical bond prices from the Tesouro Transparente open data CSV.
+ 
+Source: https://www.tesourotransparente.gov.br/ckan/dataset/taxas-dos-titulos-ofertados-pelo-tesouro-direto
+ 
+Bonds used:
+    NTN-B  — IPCA-linked, pays real coupon.   Input for real yield curve.
+    NTN-F  — Prefixed, pays nominal coupon.   Long end of nominal curve.
+    LTN    — Prefixed zero-coupon.            Short-to-medium nominal curve.
 """
 
 import logging
 from datetime import date, timedelta
+from io import StringIO
 from typing import Optional
-
+ 
 import pandas as pd
 import requests
-
+ 
 logger = logging.getLogger(__name__)
 
 # Constants
 
-TESOURO_URL = (
-    "https://www.tesourodireto.com.br/json/br/com/b3/tesourodireto/"
-    "pontodevenda/dados/historico"
+TESOURO_CSV_URL = (
+    "https://www.tesourotransparente.gov.br/ckan/dataset/"
+    "df56aa42-484a-4a59-8184-7676580c81e3/resource/"
+    "796d2059-14e9-44e3-80c9-2d9e30b405c1/download/"
+    "PrecoTaxaTesouroDireto.csv"
 )
 
-BONDS_OF_INTEREST = ("Tesouro IPCA+", "Tesouro Prefixado 2", "Tesouro Prefixado")
-
+# CSV bond name
 BOND_TYPE_MAP = {
-    "Tesouro IPCA+":         "ntnb",
-    "Tesouro Prefixado 2":   "ntnf",   # NTN-F has semiannual coupons
-    "Tesouro Prefixado":     "ltn",    # LTN is zero-coupon
+    "Tesouro IPCA+ com Juros Semestrais": "ntnb_coupon", 
+    "Tesouro IPCA+": "ntnb_zero",
+    "Tesouro Prefixado com Juros Semestrais": "ntnf",
+    "Tesouro Prefixado": "ltn",
 }
+
+RATE_BOUNDS = {
+    "ntnb_zero": (0.0, 30.0),
+    "ntnb_coupon": (0.0, 30.0),
+    "ntnf": (0.0, 50.0),
+    "ltn": (0.0, 50.0),
+}
+
 
 # Fetch
 
-def fetch_historical(
-        start_date: Optional[date] = None,
-        end_date: Optional[date] = None,
-        max_retries: int = 3,
-    ) -> pd.DataFrame:
+def list_symbols() -> list[str]:
     """
-    Fetch historical bond prices from Tesouro Direto API.
+    Return all available Tesouro Direto symbols from brapi.    
+    """
+    url = f"{BRAPI_BASE}/treasury"
+    resp = requests.get(url, headers=_headers(), timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    return [item["symbol"] for item in data.get("treasuries", [])]
 
-    Args:
-        start_date: First date to fetch. Defaults to 2 years ago.
-        end_date:   Last date to fetch. Defaults to today.
-        max_retries: HTTP retry attempts
 
-    Returns:
-        DataFrame with columns:
-            date, bond_type, maturity, pu_buy, pu_sell, rate_annual (Later validated)
+def fetch_historical(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    max_retries: int = 3,
+) -> pd.DataFrame:
+    """
+    Download the Tesouro Transparente CSV and return a tidy DataFrame
+    filtered to the bonds and date range relevant to this project.
+
+    Returns columns:
+        date, bond_type, bond_name, maturity, pu_buy, pu_sell, pu_base, rate_annual
     """
     if end_date is None:
         end_date = date.today()
@@ -68,131 +78,96 @@ def fetch_historical(
 
     for attempt in range(1, max_retries + 1):
         try:
-            logger.info(f"Fetching Tesouro Direto historical data from {start_date} to {end_date} (attempt {attempt})")
-            response = requests.get(
-                TESOURO_URL,
-                timeout=60,
-                headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"}
-                )
-            response.raise_for_status()
+            logger.info(f"Fetching Tesouro Transparente CSV (attempt {attempt})")
+            resp = requests.get(TESOURO_CSV_URL, timeout=60)
+            resp.raise_for_status()
             break
         except requests.exceptions.RequestException as exc:
             logger.warning(f"Attempt {attempt} failed: {exc}")
-            if attempt==max_retries:
+            if attempt == max_retries:
                 raise
-    raw = response.json()
-    records = _parse(raw, start_date=start_date, end_date=end_date)
 
-    df = df.sort_values(['bond_type', 'maturity', 'date']).reset_index(drop=True)
-    logger.info(f"Tesouro: {len(df)} records from {df['date'].min().date()} to {df['date'].max().date()}")
+    df_raw = pd.read_csv(
+        StringIO(resp.content.decode("utf-8")),
+        sep=";",
+        decimal=",",
+        thousands=".",
+    )
 
-    return df
+    return _parse(df_raw, start_date, end_date)
 
 # Parsing
 
-def _parse(
-    raw: dict,
-    start_date: date,
-    end_date: date,
-) -> list[dict]:
-
+def _parse(df_raw: pd.DataFrame, start_date: date, end_date: date) -> pd.DataFrame:
     """
-    Extract relevant fields from Tesouro's nested JSON response.
+    Rename columns, classify bond types, filter date range.
+    Midpoint of buy/sell rates is used as rate_annual.
     """
-    records = []
+    df = df_raw.rename(columns={
+        "Tipo Titulo": "bond_name",
+        "Data Vencimento": "maturity",
+        "Data Base": "date",
+        "Taxa Compra Manha": "rate_buy",
+        "Taxa Venda Manha":"rate_sell",
+        "PU Compra Manha": "pu_buy",
+        "PU Venda Manha": "pu_sell",
+        "PU Base Manha": "pu_base",
+    }).copy()
 
-    try:
-        bond_list = raw["response"]["TituloPUsTaxasList"]
-    except (KeyError, TypeError) as exc:
-        logger.error(f"Unexpected Tesouro response structure: {exc}")
-        return records
+    df["date"] = pd.to_datetime(df["date"],     dayfirst=True, errors="coerce")
+    df["maturity"] = pd.to_datetime(df["maturity"], dayfirst=True, errors="coerce")
 
-    for bond_entry in bond_list:
-        bond_name = bond_entry.get("nm_titulo", "")
-        bond_type = _classify(bond_name)
-        if bond_type is None:
-            continue  # skip bonds not relevant
+    df["bond_type"] = df["bond_name"].map(_classify)
+    df = df[df["bond_type"].notna()].copy()
 
-        maturity_str = bond_entry.get("dt_vencimento", "")
-        try:
-            maturity = pd.to_datetime(maturity_str, dayfirst=True).date()
-        except Exception:
-            logger.warning(f"Could not parse maturity date '{maturity_str}' for {bond_name}")
-            continue
+    df = df[
+        (df["date"].dt.date >= start_date) &
+        (df["date"].dt.date <= end_date)
+    ]
 
-        for price_entry in bond_entry.get("titulos", []):
-            date_str = price_entry.get("dt_referencia", "")
-            try:
-                ref_date = pd.to_datetime(date_str, dayfirst=True).date()
-            except Exception:
-                continue
+    df["rate_annual"] = (df["rate_buy"] + df["rate_sell"]) / 2
 
-            if not (start_date <= ref_date <= end_date):
-                continue
+    cols = ["date", "bond_type", "bond_name", "maturity", "pu_buy", "pu_sell", "pu_base", "rate_annual"]
+    df = df[cols].sort_values(["bond_type", "maturity", "date"]).reset_index(drop=True)
 
-            records.append({
-                "date":        pd.Timestamp(ref_date),
-                "bond_type":   bond_type,
-                "bond_name":   bond_name,
-                "maturity":    pd.Timestamp(maturity),
-                "pu_buy":      _to_float(price_entry.get("vl_pu_compra")),
-                "pu_sell":     _to_float(price_entry.get("vl_pu_venda")),
-                "pu_base":     _to_float(price_entry.get("vl_pu_base")),
-                "rate_annual": _to_float(price_entry.get("tx_taxa")),
-            })
+    logger.info(f"Tesouro: {len(df)} records | {df['date'].min().date()} → {df['date'].max().date()}")
+    return df
 
-    return records
 
 def _classify(bond_name: str) -> Optional[str]:
-    """Map a bond name to the internal bond_type label."""
-    # check NTN-F ("Prefixado 2") before LTN ("Prefixado")
+    """Map CSV bond name to internal bond_type."""
     for key, label in BOND_TYPE_MAP.items():
-        if bond_name.startswith(key):
+        if str(bond_name).startswith(key):
             return label
     return None
 
-
-def _to_float(value) -> Optional[float]:
-    """Convert Tesouro's string/numeric values to float ."""
-    try:
-        return float(str(value).replace(",", "."))
-    except (ValueError, TypeError):
-        return None
-
 # Validation
 
-# Plausible annual yield ranges per bond type
-RATE_BOUNDS: dict[str, tuple[float, float]] = {
-    "ntnb": (0.0, 30.0),   # real yield 
-    "ntnf": (0.0, 50.0),   # nominal prefixed
-    "ltn":  (0.0, 50.0),   # nominal prefixed zero-coupon
+# Plausible bounds
+
+RATE_BOUNDS = {
+    "ntnb": (0.0, 30.0),
+    "ntnf": (0.0, 50.0),
+    "ltn":  (0.0, 50.0),
 }
 
-PU_BOUNDS = (100.0, 20_000.0)  
-
-
 def validate(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Flag rows where yields or PU prices fall outside plausible bounds.
-    Adds `is_valid` boolean column.
-    """
+    """Add is_valid column flagging out-of-bounds or null rates."""
     df = df.copy()
-    valid = pd.Series(True, index=df.index)
+    in_bounds = pd.Series(True, index=df.index)
 
     for bond_type, (lo, hi) in RATE_BOUNDS.items():
         mask = df["bond_type"] == bond_type
-        valid &= ~(mask & df["rate_annual"].between(lo, hi) == False)
+        in_bounds &= ~(mask & ~df["rate_annual"].between(lo, hi))
 
-    pu_ok  = df["pu_base"].between(*PU_BOUNDS) | df["pu_base"].isna()
-    null_rate = df["rate_annual"].isna()
+    df["is_valid"] = in_bounds & df["rate_annual"].notna() & df["pu_base"].notna()
 
-    df["is_valid"] = valid & pu_ok & ~null_rate
-
-    n_invalid = (~df["is_valid"]).sum()
-    if n_invalid:
-        logger.warning(f"Tesouro: {n_invalid} invalid rows flagged.")
-
+    n = (~df["is_valid"]).sum()
+    if n:
+        logger.warning(f"{n} invalid rows flagged.")
     return df
+
+
 
 # Fetching
 
@@ -202,14 +177,12 @@ def fetch_all(
 ) -> dict[str, pd.DataFrame]:
     """
     Fetch, parse, and validate Tesouro data.
-    Returns a dict with one DataFrame per bond type.
-
-    Keys: 'ntnb', 'ntnf', 'ltn'
+    Returns dict keyed by bond_type: 'ntnb', 'ntnf', 'ltn'.
     """
     df = fetch_historical(start_date=start_date, end_date=end_date)
     df = validate(df)
 
     return {
-        bond_type: df[df["bond_type"] == bond_type].reset_index(drop=True)
-        for bond_type in ("ntnb", "ntnf", "ltn")
+        bt: df[df["bond_type"] == bt].reset_index(drop=True)
+        for bt in ("ntnb_zero", "ntnb_coupon", "ntnf", "ltn")
     }
