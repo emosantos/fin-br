@@ -56,7 +56,7 @@ def fetch_historical(
 ) -> pd.DataFrame:
     """
     Download the Tesouro Transparente CSV and return a tidy DataFrame
-    filtered to the bonds and date range relevant to this project.
+    filtered to the relevant bonds and date range.
 
     Returns columns:
         date, bond_type, bond_name, maturity, pu_buy, pu_sell, pu_base, rate_annual

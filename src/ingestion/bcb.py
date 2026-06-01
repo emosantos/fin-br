@@ -52,9 +52,9 @@ def fetch_series(
     """
     Fetch a single BCB SGS series and return a DataFrame
     Args:
-        series_id:   BCB SGS numeric series code.
-        start_date:  First date to fetch. Defaults to 2 years ago.
-        end_date:    Last date to fetch. Defaults to today.
+        series_id: BCB SGS numeric series code.
+        start_date: First date to fetch. Defaults to 2 years ago.
+        end_date: Last date to fetch. Defaults to today.
         max_retries: Number of HTTP retry attempts on transient errors.
     Retunrs:
         DataFrame with columns [date, value, series_id].
@@ -62,7 +62,7 @@ def fetch_series(
     if end_date is None:
         end_date = date.today()
     if start_date is None:
-        start_date = end_date - timedelta(days=730)
+        start_date = end_date - timedelta(days=365 * 2) # 2 years
 
     params = {
         "formato": "json",
@@ -73,7 +73,7 @@ def fetch_series(
 
     for attempt in range(1, max_retries + 1):
         try:
-            logger.info(f"Fetching series {series_id} | {start_date} → {end_date} (attempt {attempt})")
+            logger.info(f"Fetching series {series_id}. From {start_date} to {end_date} (attempt {attempt})")
             response = requests.get(url, params=params, timeout=30)
             response.raise_for_status()
             break
@@ -92,8 +92,8 @@ def fetch_series(
         return pd.DataFrame(columns=["date", "value", "series_id"])
 
     df = pd.DataFrame(raw)
-    df["date"]      = pd.to_datetime(df["data"], format=DATE_FORMAT)
-    df["value"]     = pd.to_numeric(df["valor"], errors="coerce")
+    df["date"] = pd.to_datetime(df["data"], format=DATE_FORMAT)
+    df["value"] = pd.to_numeric(df["valor"], errors="coerce")
     df["series_id"] = series_id
     df = df[["date", "value", "series_id"]].sort_values("date").reset_index(drop=True)
 
@@ -140,7 +140,6 @@ def fetch_all(
     ) -> dict[str, pd.DataFrame]:
     """
     Fetch and validate all project series.
-
     """
     results = {}
     for name, sid in SERIES.items():
