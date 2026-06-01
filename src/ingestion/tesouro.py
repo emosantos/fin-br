@@ -48,16 +48,6 @@ RATE_BOUNDS = {
 
 # Fetch
 
-def list_symbols() -> list[str]:
-    """
-    Return all available Tesouro Direto symbols from brapi.    
-    """
-    url = f"{BRAPI_BASE}/treasury"
-    resp = requests.get(url, headers=_headers(), timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    return [item["symbol"] for item in data.get("treasuries", [])]
-
 
 def fetch_historical(
     start_date: Optional[date] = None,
