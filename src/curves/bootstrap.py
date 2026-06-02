@@ -36,3 +36,19 @@ def bootstrap_ntnb_principal(df_tesouro: pd.DataFrame, df_vna: pd.DataFrame) -> 
     df['yield_calculated'] = (df['vna'] / df['pu_base'])**(252 / df['du']) - 1
     
     return df[['date', 'maturity', 'du', 'pu_base', 'vna', 'yield_calculated']]
+
+def bootstrap_ltn(df_tesouro: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculates the nominal yield for LTN (Letra do Tesouro Nacional).
+    LTNs have a fixed face value of 1000 BRL at maturity.
+    """
+    df = df_tesouro[df_tesouro["bond_type"] == "ltn"].copy()
+    
+    FACE_VALUE = 1000.0
+    
+    df['du'] = df.apply(lambda x: cal.count_bus_days(x['date'].date(), x['maturity'].date()), axis=1)
+    
+    # Formula: (1000 / PU) ^ (252 / DU) - 1
+    df['yield_calculated'] = (FACE_VALUE / df['pu_base'])**(252 / df['du']) - 1
+    
+    return df[['date', 'maturity', 'du', 'pu_base', 'yield_calculated']]
