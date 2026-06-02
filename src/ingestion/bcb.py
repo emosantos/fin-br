@@ -39,9 +39,19 @@ SERIES = {
     "vna_ntn_c": 4390
 }
 
+FOCUS_SERIES = {
+    'expected_ipca12m' : 190, # FOcus Expected IPCA 12m
+    'expected_selic_year_end' : 20002,  # Focus Expected SELIC 12m
+}
+
+
 DATE_FORMAT = "%d/%m/%Y"
 
 # Fetch
+
+def fetch_focus_expectations():
+    """Fetches key market expectations to calibrate Monte Carlo simulations."""
+    return fetch_all(start_date=date.today())
 
 def fetch_series(
     series_id: int,
@@ -137,15 +147,22 @@ def validate(df: pd.DataFrame) -> pd.DataFrame:
 def fetch_all(
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
+        include_focus: bool = True
     ) -> dict[str, pd.DataFrame]:
     """
-    Fetch and validate all project series.
+    Fetch and validate all series, with expectations optional.
     """
     results = {}
     for name, sid in SERIES.items():
         df = fetch_series(sid, start_date=start_date, end_date=end_date)
         df = validate(df)
         results[name] = df
+
+    if include_focus:
+        for name, sid in FOCUS_SERIES.items():
+            df = fetch_series(sid, start_date=start_date, end_date=end_date)
+            df = validate(df)
+            results[name] = df
     return results
 
 # PPP S3 Storage
