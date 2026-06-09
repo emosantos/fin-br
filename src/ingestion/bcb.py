@@ -102,6 +102,12 @@ def fetch_series(
         return pd.DataFrame(columns=["date", "value", "series_id"])
 
     df = pd.DataFrame(raw)
+
+    # Possible return of empty
+    if df.empty or 'data' not in df.columns:
+        logger.error(f"Series {series_id} returned empty data for the requested period. \nSkipping.")
+        return pd.DataFrame(columns=["date", "value", "series_id"])
+
     df["date"] = pd.to_datetime(df["data"], format=DATE_FORMAT)
     df["value"] = pd.to_numeric(df["valor"], errors="coerce")
     df["series_id"] = series_id
@@ -119,7 +125,7 @@ BOUNDS: dict[int, tuple[float,float]] = {
     432: (0.0, 100.0),   # SELIC target annual %
     11:  (0.0, 5.0),     # SELIC daily
     12466: (1000.0, 20000.0), # VNA NTN-B (IPCA related)
-    4390: (1000.0, 50000.0)    # VNA NTN-C (IGP-M related)
+    4390: (-5.0, 15.0)    # VNA NTN-C (IGP-M related)
 
 }
     
@@ -160,9 +166,10 @@ def fetch_all(
 
     if include_focus:
         for name, sid in FOCUS_SERIES.items():
-            df = fetch_series(sid, start_date=start_date, end_date=end_date)
+            # Forcing 14 days time windows
+            focus_start = date.today() - timedelta(days=14)
+            df = fetch_series(sid, start_date=focus_start, end_date=end_date)
             df = validate(df)
             results[name] = df
     return results
 
-# PPP S3 Storage
