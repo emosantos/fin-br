@@ -19,6 +19,7 @@ from typing import Optional
 import boto3
 import pandas as pd
 import requests
+import numpy as np
 
 # Logging
 
@@ -46,6 +47,61 @@ FOCUS_SERIES = {
 
 
 DATE_FORMAT = "%d/%m/%Y"
+
+# Imputing
+
+def impute_vna_from_ipca(df_ipca: pd.DataFrame, target_dates: list) -> pd.DataFrame:
+    """
+    Imputes historical NTN-B VNA values using monthly IPCA percentage variations
+    when the official BCB Series 12466 endpoint fails.
+    """
+    if df_ipca.empty:
+        raise ValueError("Cannot impute VNA because the IPCA dataframe (Series 433) is empty.")
+    
+    # Clean and sort the IPCA series (convert % to decimal multiplier)
+    df_inflation = df_ipca.copy()
+    df_inflation['date'] = pd.to_datetime(df_inflation['date'])
+    df_inflation = df_inflation.sort_values('date').reset_index(drop=True)
+    df_inflation['factor'] = 1 + (df_inflation['value'] / 100.0)
+    
+    # Establish the absolute timeline based on Tesouro transaction dates
+    timeline = pd.DataFrame({'date': pd.to_datetime(target_dates)}).drop_duplicates()
+    timeline = timeline.sort_values('date').reset_index(drop=True)
+    
+    # Align inflation factors to the calendar months
+    
+    df_inflation['year_month'] = df_inflation['date'].dt.to_period('M')
+    timeline['year_month'] = timeline['date'].dt.to_period('M')
+    
+    # Map the factors to the monthly timeline
+    factor_map = df_inflation.set_index('year_month')['factor'].to_dict()
+    timeline['monthly_factor'] = timeline['year_month'].map(factor_map).fillna(1.0035) # 3.5% annualized fallback if missing
+    
+    # 4. Compute Cumulative Inflation from the Anchor Date (Jan 2024)
+    anchor_period = pd.Period("2024-01", freq='M')
+   
+    monthly_sequence = timeline.groupby('year_month')['monthly_factor'].first().sort_index()
+    
+    cumulative_multipliers = {}
+    current_cum_factor = 1.0
+    
+    for period, factor in monthly_sequence.items():
+        if period > anchor_period:
+            current_cum_factor *= factor
+        cumulative_multipliers[period] = current_cum_factor
+        
+    # Cumulative multipliers back to the daily transaction timeline
+    timeline['cum_inflation'] = timeline['year_month'].map(cumulative_multipliers)
+    
+    # Extrapolate VNA: Anchor Value * Cumulative Inflation Factor (Base anchor point: 4,113.79)
+    anchor_vna = 4113.793853 
+    timeline['value'] = anchor_vna * timeline['cum_inflation']
+    
+    # Format to match normal standard SGS structure
+    df_vna_imputed = timeline[['date', 'value']].copy()
+    df_vna_imputed['series_id'] = 12466
+    
+    return df_vna_imputed
 
 # Fetch
 
